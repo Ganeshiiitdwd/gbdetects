@@ -3,11 +3,10 @@ package com.example.gbdetects;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.graphics.SurfaceTexture;
+import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -15,126 +14,128 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.Image;
+import android.media.ImageReader;
+import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Size;
 import android.view.Surface;
-import android.view.TextureView;
 import android.widget.Toast;
-
-import java.util.Arrays;
+import java.nio.ByteBuffer;
+import java.util.Collections;
 
 public class MainActivity extends AppCompatActivity {
 
-    private TextureView textureView;
-    private CameraDevice cameraDevice;
-    private Size previewSize;
-    private CaptureRequest.Builder captureRequestBuilder;
-    private CameraCaptureSession cameraCaptureSession;
-    private Handler backgroundHandler;
-    private HandlerThread backgroundThread;
+    private GLSurfaceView gl_v;
+    private MyGLRenderer rend;
+    private CameraDevice cam_d;
+    private CameraCaptureSession cap_s;
+    private ImageReader img_r;
+    private Size prev_s;
+    private Handler bg_h;
+    private HandlerThread bg_t;
 
-    // Load our native library
     static {
         System.loadLibrary("gbdetects");
     }
 
-    // Declare the native method
-    public native String processFrameStub(String input);
+    public native ByteBuffer processFrame(int w, int h, ByteBuffer y_b, ByteBuffer u_b, ByteBuffer v_b, int y_s, int u_s, int v_s);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-
-        textureView = findViewById(R.id.textureView);
-
-        // Call the dummy JNI function to test the bridge
-        String resultFromJNI = processFrameStub("Test");
-        Toast.makeText(this, resultFromJNI, Toast.LENGTH_LONG).show();
+        gl_v = findViewById(R.id.glSurfaceView);
+        gl_v.setEGLContextClientVersion(2);
+        rend = new MyGLRenderer();
+        gl_v.setRenderer(rend);
+        gl_v.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
     }
 
-    private final TextureView.SurfaceTextureListener surfaceTextureListener = new TextureView.SurfaceTextureListener() {
-        @Override
-        public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surface, int width, int height) {
-            openCamera();
-        }
-        @Override
-        public void onSurfaceTextureSizeChanged(@NonNull SurfaceTexture surface, int width, int height) {}
-        @Override
-        public boolean onSurfaceTextureDestroyed(@NonNull SurfaceTexture surface) {
-            return false;
-        }
-        @Override
-        public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {}
-    };
-
-    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
+    private final CameraDevice.StateCallback st_cb = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
-            cameraDevice = camera;
-            createCameraPreview();
+            cam_d = camera;
+            createPreview();
         }
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            cameraDevice.close();
+            cam_d.close();
         }
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
-            cameraDevice.close();
-            cameraDevice = null;
+            cam_d.close();
+            cam_d = null;
         }
     };
 
-    private void openCamera() {
-        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+    private void openCam() {
+        CameraManager man = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         try {
-            String cameraId = manager.getCameraIdList()[0];
-            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            previewSize = map.getOutputSizes(SurfaceTexture.class)[0];
+            String cam_id = man.getCameraIdList()[0];
+            CameraCharacteristics chars = man.getCameraCharacteristics(cam_id);
+            StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            prev_s = map.getOutputSizes(ImageFormat.YUV_420_888)[0];
 
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, 200);
                 return;
             }
-            manager.openCamera(cameraId, stateCallback, null);
+            man.openCamera(cam_id, st_cb, bg_h);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
     }
 
-    protected void createCameraPreview() {
+    private void createPreview() {
         try {
-            SurfaceTexture texture = textureView.getSurfaceTexture();
-            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-            Surface surface = new Surface(texture);
-            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            captureRequestBuilder.addTarget(surface);
+            img_r = ImageReader.newInstance(prev_s.getWidth(), prev_s.getHeight(), ImageFormat.YUV_420_888, 2);
+            img_r.setOnImageAvailableListener(reader -> {
+                Image img = reader.acquireLatestImage();
+                if (img == null) return;
 
-            cameraDevice.createCaptureSession(Arrays.asList(surface), new CameraCaptureSession.StateCallback() {
+                Image.Plane[] planes = img.getPlanes();
+                ByteBuffer y_b = planes[0].getBuffer();
+                ByteBuffer u_b = planes[1].getBuffer();
+                ByteBuffer v_b = planes[2].getBuffer();
+
+                int y_s = planes[0].getRowStride();
+                int u_s = planes[1].getRowStride();
+                int v_s = planes[2].getRowStride();
+
+                ByteBuffer proc_frame = processFrame(img.getWidth(), img.getHeight(), y_b, u_b, v_b, y_s, u_s, v_s);
+
+                if (proc_frame != null) {
+                    rend.setFrame(img.getHeight(), img.getWidth(), proc_frame);
+                    gl_v.requestRender();
+                }
+
+                img.close();
+            }, bg_h);
+
+            Surface surf = img_r.getSurface();
+            final CaptureRequest.Builder cap_b = cam_d.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            cap_b.addTarget(surf);
+
+            cam_d.createCaptureSession(Collections.singletonList(surf), new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(@NonNull CameraCaptureSession session) {
-                    if (cameraDevice == null) return;
-                    cameraCaptureSession = session;
-                    updatePreview();
+                    if (cam_d == null) return;
+                    cap_s = session;
+                    try {
+                        cap_b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                        cap_s.setRepeatingRequest(cap_b.build(), null, bg_h);
+                    } catch (CameraAccessException e) {
+                        e.printStackTrace();
+                    }
                 }
                 @Override
                 public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                    Toast.makeText(MainActivity.this, "Configuration change", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, "Config change", Toast.LENGTH_SHORT).show();
                 }
             }, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void updatePreview() {
-        if (cameraDevice == null) return;
-        captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-        try {
-            cameraCaptureSession.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -143,32 +144,31 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        startBackgroundThread();
-        if (textureView.isAvailable()) {
-            openCamera();
-        } else {
-            textureView.setSurfaceTextureListener(surfaceTextureListener);
-        }
+        startBgThread();
+        openCam();
+        gl_v.onResume();
     }
 
     @Override
     protected void onPause() {
-        stopBackgroundThread();
+        stopBgThread();
         super.onPause();
+        gl_v.onPause();
     }
 
-    protected void startBackgroundThread() {
-        backgroundThread = new HandlerThread("Camera Background");
-        backgroundThread.start();
-        backgroundHandler = new Handler(backgroundThread.getLooper());
+    protected void startBgThread() {
+        bg_t = new HandlerThread("Camera BG");
+        bg_t.start();
+        bg_h = new Handler(bg_t.getLooper());
     }
 
-    protected void stopBackgroundThread() {
-        backgroundThread.quitSafely();
+    protected void stopBgThread() {
+        if (bg_t == null) return;
+        bg_t.quitSafely();
         try {
-            backgroundThread.join();
-            backgroundThread = null;
-            backgroundHandler = null;
+            bg_t.join();
+            bg_t = null;
+            bg_h = null;
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -177,12 +177,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 200) {
-            if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "camera permission granted", Toast.LENGTH_LONG).show();
-            } else {
-                Toast.makeText(this, "camera permission denied", Toast.LENGTH_LONG).show();
-            }
+        if (requestCode == 200 && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Permission denied", Toast.LENGTH_LONG).show();
+            finish();
         }
     }
 }
