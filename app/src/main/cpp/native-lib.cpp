@@ -3,53 +3,63 @@
 #include <opencv2/imgproc.hpp>
 #include <GLES2/gl2.h>
 
-// Global variable to hold processed frame data
 cv::Mat processed_mat;
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_com_example_gbdetects_MainActivity_processFrame(
-        JNIEnv* env,
-        jobject,
-        jint w,
-        jint h,
-        jobject y_buf,
-        jobject u_buf,
-        jobject v_buf,
-        jint y_s,
-        jint u_s,
-        jint v_s) {
+        JNIEnv* env, jobject, jint w, jint h,
+        jobject y_buf, jobject u_buf, jobject v_buf,
+        jint y_s, jint u_s, jint v_s,
+        jint mode) { // Added mode parameter
 
     auto y = (uint8_t*) env->GetDirectBufferAddress(y_buf);
     auto u = (uint8_t*) env->GetDirectBufferAddress(u_buf);
     auto v = (uint8_t*) env->GetDirectBufferAddress(v_buf);
 
-    cv::Mat gray(h, w, CV_8UC1, y, y_s);
-    cv::Mat canny_out;
+    cv::Mat y_mat(h, w, CV_8UC1, y, y_s);
+    cv::Mat u_mat(h / 2, w / 2, CV_8UC1, u, u_s);
+    cv::Mat v_mat(h / 2, w / 2, CV_8UC1, v, v_s);
 
-    cv::Canny(gray, canny_out, 50, 150);
+    switch (mode) {
+        case 0: // Raw
+            // The YUV_420_888 format has semi-planar U and V. For OpenCV conversion
+            // we need to merge them. But since we are getting separate buffers for U and V
+            // we can construct a full YUV image for conversion. A simpler way for a raw
+            // preview is to just show the Y (grayscale) plane. Let's make a BGRA raw.
+            // This requires a full YUV matrix.
+        {
+            cv::Mat yuv_full(h + h / 2, w, CV_8UC1);
+            memcpy(yuv_full.data, y, w * h);
+            memcpy(yuv_full.data + w * h, u, w * h / 4);
+            memcpy(yuv_full.data + w * h + w * h / 4, v, w * h / 4);
+            cv::cvtColor(yuv_full, processed_mat, cv::COLOR_YUV2BGRA_I420);
+        }
+            break;
 
-    // Convert Canny's single channel output to 4-channel BGRA for OpenGL
-    cv::cvtColor(canny_out, processed_mat, cv::COLOR_GRAY2BGRA, 4);
+        case 1: // Edges
+        default:
+        {
+            cv::Mat canny_out;
+            cv::Canny(y_mat, canny_out, 50, 150);
+            cv::cvtColor(canny_out, processed_mat, cv::COLOR_GRAY2BGRA, 4);
+        }
+            break;
+
+        case 2: // Grayscale
+            cv::cvtColor(y_mat, processed_mat, cv::COLOR_GRAY2BGRA, 4);
+            break;
+    }
 
     return env->NewDirectByteBuffer(processed_mat.data, processed_mat.total() * processed_mat.elemSize());
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_gbdetects_MyGLRenderer_updateTexture(
-        JNIEnv *env,
-        jobject,
-        jint tex_id,
-        jint w,
-        jint h,
-        jobject data) {
-
+        JNIEnv *env, jobject, jint tex_id, jint w, jint h, jobject data) {
     auto pixels = (uint8_t *) env->GetDirectBufferAddress(data);
-
     glBindTexture(GL_TEXTURE_2D, tex_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    // Corrected typo on the line below from GL_TEXTURE_2d to GL_TEXTURE_2D
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    // Note: The matrix from OpenCV is rotated. We pass w and h swapped.
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, h, w, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 }
 
