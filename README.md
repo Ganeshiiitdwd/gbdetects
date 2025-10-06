@@ -49,7 +49,20 @@ Data Flow: Camera2 (Java) → ImageReader (Java) → JNI Bridge → C++ Layer �
 3.  **Process**: OpenCV in C++ applies the selected filter (Edges, Grayscale, etc.).
     
 4.  **Render**: The processed cv::Mat is converted to a ByteBuffer and passed back to Java, where it's uploaded to an OpenGL texture and drawn on screen.
-    
+
+## 📷 Screenshots & Output
+
+Below are sample results and logs from the running app:
+
+- FPS logs showing live rendering from OpenGL
+- Toggle feature between **Raw**, **Grayscale**, and **Edge-detected** views
+
+## 📷 Screenshots & Output
+
+| FPS Logging (real-time) | Edge Detection | Grayscale Output | Web Viewer Page |
+|:------------------------:|:---------------:|:----------------:|:----------------:|
+| <img src="assets/logcat_img.png" width="220"/> | <img src="assets/edge_img.png" width="220"/> | <img src="assets/grayscale_img.png" width="220"/> | <img src="assets/webviewer.png" width="220"/> |
+
 
 🚀 Getting Started
 ------------------
